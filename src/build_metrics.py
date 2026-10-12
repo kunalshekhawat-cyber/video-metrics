@@ -18,6 +18,10 @@ Metric definitions (all from model 1, card 11942; one row per ACTIVE video):
                            Other verified_status values are ignored.
   Segments              -> Ent / Mid / Resellers / SMB, matched case-insensitively
                            on customer_segment.
+  p99 / p95 per tab     -> video_vin: pooled over all videos in the period.
+                           video_region / video_rt: per rooftop (team_id), then
+                           a video-weighted average across rooftops (within the
+                           region for video_region).
   Period bucketing      -> by the active video's Created_ON, ISO week (Mon-Sun).
                            4 completed weekly + 4 monthly + 1 MTD = 9 buckets.
                            Empty period/segment cell -> 0.
@@ -343,26 +347,60 @@ def _is_percentile_key(key):
     return key.endswith("p99_tat_hrs") or key.endswith("p95_tat_hrs")
 
 
+def rooftop_weighted_percentiles(rows):
+    """
+    p99 / p95 TAT (QC and tech, overall and per segment) computed PER rooftop
+    (team_id), then averaged across rooftops weighted by each rooftop's number
+    of videos with that TAT. Rooftops with no TAT for a metric are skipped.
+    Returns {percentile_key: value (0 when no data)}.
+    """
+    by_team = defaultdict(list)
+    for r in rows:
+        by_team[r["team_id"]].append(r)
+
+    scopes = [("", None)] + [(f"{seg}_", seg) for seg in SEGMENTS.values()]
+    kinds = [("", "qc_tat"), ("tech_", "tech_tat")]
+
+    out = {}
+    for prefix, seg in scopes:
+        for kind, field in kinds:
+            sums = {"p99": 0.0, "p95": 0.0}
+            total_n = 0
+            for team_rows in by_team.values():
+                tats = [r[field] for r in team_rows
+                        if r[field] is not None and (seg is None or r["seg"] == seg)]
+                if not tats:
+                    continue
+                _, p99, p95 = _sla_p99_p95(tats)
+                sums["p99"] += p99 * len(tats)
+                sums["p95"] += p95 * len(tats)
+                total_n += len(tats)
+            for q in ("p99", "p95"):
+                key = f"{prefix}{kind}{q}_tat_hrs"
+                out[key] = round(sums[q] / total_n, 2) if total_n else 0
+    return out
+
+
 def compute_macro_avg_metrics(rows):
     """
     Metrics for video_rt:
       - SLA and fulfillment: rooftop macro-average -- compute PER rooftop
         (team_id), then average across rooftops that have data for that
         metric (rooftops without data are skipped, not counted as 0).
-      - p99 / p95 TAT (QC and tech, overall and per segment): pooled over
-        all videos, same as video_vin / video_region (weighted by video count).
+      - p99 / p95 TAT (QC and tech, overall and per segment): per rooftop,
+        then a video-weighted average across rooftops.
     """
     by_team = defaultdict(list)
     for r in rows:
         by_team[r["team_id"]].append(r)
 
     per_team = [compute_group_metrics_raw(team_rows) for team_rows in by_team.values()]
-    pooled = compute_group_metrics(rows)
+    weighted = rooftop_weighted_percentiles(rows)
 
     out = {}
     for key in METRIC_KEYS:
         if _is_percentile_key(key):
-            out[key] = pooled[key]
+            out[key] = weighted[key]
             continue
         vals = [t[key] for t in per_team if t.get(key) is not None]
         out[key] = round(sum(vals) / len(vals), 2) if vals else 0
@@ -447,6 +485,9 @@ def build_tab_rows(raw_rows, periods, grain, last_updated):
                 m = compute_macro_avg_metrics(all_g)
             else:
                 m = compute_group_metrics(all_g)
+                if grain == "region":
+                    # p99/p95: per rooftop within the region, video-weighted
+                    m.update(rooftop_weighted_percentiles(all_g))
 
             # distinct video counts for this group/period (not deduped to VIN)
             # total_videos = distinct video_ids whose crm_status is qc_done
