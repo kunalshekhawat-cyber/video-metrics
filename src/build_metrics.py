@@ -339,20 +339,31 @@ def compute_group_metrics(rows):
     return {k: (0 if v is None else v) for k, v in raw.items()}
 
 
+def _is_percentile_key(key):
+    return key.endswith("p99_tat_hrs") or key.endswith("p95_tat_hrs")
+
+
 def compute_macro_avg_metrics(rows):
     """
-    Rooftop macro-average (used by video_rt): compute each metric PER rooftop
-    (team_id), then average across rooftops that have data for that metric.
-    Rooftops with no data for a given metric are skipped from its average.
+    Metrics for video_rt:
+      - SLA and fulfillment: rooftop macro-average -- compute PER rooftop
+        (team_id), then average across rooftops that have data for that
+        metric (rooftops without data are skipped, not counted as 0).
+      - p99 / p95 TAT (QC and tech, overall and per segment): pooled over
+        all videos, same as video_vin / video_region (weighted by video count).
     """
     by_team = defaultdict(list)
     for r in rows:
         by_team[r["team_id"]].append(r)
 
     per_team = [compute_group_metrics_raw(team_rows) for team_rows in by_team.values()]
+    pooled = compute_group_metrics(rows)
 
     out = {}
     for key in METRIC_KEYS:
+        if _is_percentile_key(key):
+            out[key] = pooled[key]
+            continue
         vals = [t[key] for t in per_team if t.get(key) is not None]
         out[key] = round(sum(vals) / len(vals), 2) if vals else 0
     return out
@@ -428,7 +439,7 @@ def build_tab_rows(raw_rows, periods, grain, last_updated):
             for r in all_p:
                 groups[r["region"]].append(r)
             groups = dict(sorted(groups.items()))
-        else:  # vin / rt -- overall per period (rt is a rooftop macro-average)
+        else:  # vin / rt -- overall per period (rt: SLA/fulfillment rooftop macro-avg)
             groups = {None: all_p}
 
         for gkey, all_g in groups.items():
