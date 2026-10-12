@@ -18,10 +18,11 @@ Metric definitions (all from model 1, card 11942; one row per ACTIVE video):
                            Other verified_status values are ignored.
   Segments              -> Ent / Mid / Resellers / SMB, matched case-insensitively
                            on customer_segment.
-  p99 / p95 per tab     -> video_vin: pooled over all videos in the period.
+  Aggregation per tab   -> video_vin: pooled over all videos in the period.
                            video_region / video_rt: per rooftop (team_id), then
                            a video-weighted average across rooftops (within the
-                           region for video_region).
+                           region for video_region). For SLA / fulfillment
+                           that weighted average equals the pooled percentage.
   Period bucketing      -> by the active video's Created_ON, ISO week (Mon-Sun).
                            4 completed weekly + 4 monthly + 1 MTD = 9 buckets.
                            Empty period/segment cell -> 0.
@@ -381,29 +382,18 @@ def rooftop_weighted_percentiles(rows):
     return out
 
 
-def compute_macro_avg_metrics(rows):
+def compute_rooftop_weighted_metrics(rows):
     """
-    Metrics for video_rt:
-      - SLA and fulfillment: rooftop macro-average -- compute PER rooftop
-        (team_id), then average across rooftops that have data for that
-        metric (rooftops without data are skipped, not counted as 0).
-      - p99 / p95 TAT (QC and tech, overall and per segment): per rooftop,
-        then a video-weighted average across rooftops.
+    Metrics for video_rt and video_region (per region): every metric is a
+    rooftop (team_id)-level value, averaged across rooftops weighted by each
+    rooftop's video count for that metric.
+      - p99 / p95 TAT: computed per rooftop, then video-weighted average.
+      - SLA / fulfillment: a video-weighted average of per-rooftop percentages
+        is exactly the pooled percentage over all the rooftops' videos, so it
+        is computed directly as one pool.
     """
-    by_team = defaultdict(list)
-    for r in rows:
-        by_team[r["team_id"]].append(r)
-
-    per_team = [compute_group_metrics_raw(team_rows) for team_rows in by_team.values()]
-    weighted = rooftop_weighted_percentiles(rows)
-
-    out = {}
-    for key in METRIC_KEYS:
-        if _is_percentile_key(key):
-            out[key] = weighted[key]
-            continue
-        vals = [t[key] for t in per_team if t.get(key) is not None]
-        out[key] = round(sum(vals) / len(vals), 2) if vals else 0
+    out = compute_group_metrics(rows)
+    out.update(rooftop_weighted_percentiles(rows))
     return out
 
 
@@ -477,17 +467,14 @@ def build_tab_rows(raw_rows, periods, grain, last_updated):
             for r in all_p:
                 groups[r["region"]].append(r)
             groups = dict(sorted(groups.items()))
-        else:  # vin / rt -- overall per period (rt: SLA/fulfillment rooftop macro-avg)
+        else:  # vin / rt -- overall per period (rt: rooftop-weighted)
             groups = {None: all_p}
 
         for gkey, all_g in groups.items():
-            if grain == "rt":
-                m = compute_macro_avg_metrics(all_g)
-            else:
+            if grain == "vin":
                 m = compute_group_metrics(all_g)
-                if grain == "region":
-                    # p99/p95: per rooftop within the region, video-weighted
-                    m.update(rooftop_weighted_percentiles(all_g))
+            else:  # rt overall, or region: rooftop-level, video-weighted
+                m = compute_rooftop_weighted_metrics(all_g)
 
             # distinct video counts for this group/period (not deduped to VIN)
             # total_videos = distinct video_ids whose crm_status is qc_done
