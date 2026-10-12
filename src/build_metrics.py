@@ -18,11 +18,12 @@ Metric definitions (all from model 1, card 11942; one row per ACTIVE video):
                            Other verified_status values are ignored.
   Segments              -> Ent / Mid / Resellers / SMB, matched case-insensitively
                            on customer_segment.
-  Aggregation per tab   -> video_vin: pooled over all videos in the period.
-                           video_region: pooled over each region's videos.
-                           video_rt: per rooftop (team_id), then a
-                           video-weighted average across rooftops. For SLA /
-                           fulfillment that equals the pooled percentage.
+  Aggregation per tab   -> video_vin: VIN level -- pooled over all VINs (one
+                           active video per VIN) in the period.
+                           video_region: region level -- one row per region,
+                           pooled over that region's VINs.
+                           video_rt: rooftop level -- every metric per rooftop
+                           (team_id), then a simple average across rooftops.
   Period bucketing      -> by the active video's Created_ON, ISO week (Mon-Sun).
                            4 completed weekly + 4 monthly + 1 MTD = 9 buckets.
                            Empty period/segment cell -> 0.
@@ -344,56 +345,23 @@ def compute_group_metrics(rows):
     return {k: (0 if v is None else v) for k, v in raw.items()}
 
 
-def _is_percentile_key(key):
-    return key.endswith("p99_tat_hrs") or key.endswith("p95_tat_hrs")
-
-
-def rooftop_weighted_percentiles(rows):
+def compute_rooftop_avg_metrics(rows):
     """
-    p99 / p95 TAT (QC and tech, overall and per segment) computed PER rooftop
-    (team_id), then averaged across rooftops weighted by each rooftop's number
-    of videos with that TAT. Rooftops with no TAT for a metric are skipped.
-    Returns {percentile_key: value (0 when no data)}.
+    Rooftop-level metrics for video_rt: compute every metric PER rooftop
+    (team_id), then take a simple average across rooftops, so each rooftop
+    counts once regardless of its video volume. Rooftops with no data for a
+    metric are skipped from that metric's average (not counted as 0).
     """
     by_team = defaultdict(list)
     for r in rows:
         by_team[r["team_id"]].append(r)
 
-    scopes = [("", None)] + [(f"{seg}_", seg) for seg in SEGMENTS.values()]
-    kinds = [("", "qc_tat"), ("tech_", "tech_tat")]
+    per_team = [compute_group_metrics_raw(team_rows) for team_rows in by_team.values()]
 
     out = {}
-    for prefix, seg in scopes:
-        for kind, field in kinds:
-            sums = {"p99": 0.0, "p95": 0.0}
-            total_n = 0
-            for team_rows in by_team.values():
-                tats = [r[field] for r in team_rows
-                        if r[field] is not None and (seg is None or r["seg"] == seg)]
-                if not tats:
-                    continue
-                _, p99, p95 = _sla_p99_p95(tats)
-                sums["p99"] += p99 * len(tats)
-                sums["p95"] += p95 * len(tats)
-                total_n += len(tats)
-            for q in ("p99", "p95"):
-                key = f"{prefix}{kind}{q}_tat_hrs"
-                out[key] = round(sums[q] / total_n, 2) if total_n else 0
-    return out
-
-
-def compute_rooftop_weighted_metrics(rows):
-    """
-    Metrics for video_rt: every metric is a rooftop (team_id)-level value,
-    averaged across rooftops weighted by each rooftop's video count for that
-    metric.
-      - p99 / p95 TAT: computed per rooftop, then video-weighted average.
-      - SLA / fulfillment: a video-weighted average of per-rooftop percentages
-        is exactly the pooled percentage over all the rooftops' videos, so it
-        is computed directly as one pool.
-    """
-    out = compute_group_metrics(rows)
-    out.update(rooftop_weighted_percentiles(rows))
+    for key in METRIC_KEYS:
+        vals = [t[key] for t in per_team if t.get(key) is not None]
+        out[key] = round(sum(vals) / len(vals), 2) if vals else 0
     return out
 
 
@@ -467,13 +435,13 @@ def build_tab_rows(raw_rows, periods, grain, last_updated):
             for r in all_p:
                 groups[r["region"]].append(r)
             groups = dict(sorted(groups.items()))
-        else:  # vin / rt -- overall per period (rt: rooftop-weighted)
+        else:  # vin / rt -- overall per period (rt: rooftop average)
             groups = {None: all_p}
 
         for gkey, all_g in groups.items():
-            if grain == "rt":  # rooftop-level, video-weighted
-                m = compute_rooftop_weighted_metrics(all_g)
-            else:  # vin overall, or region: pooled over the group's videos
+            if grain == "rt":  # rooftop-level: each rooftop counts once
+                m = compute_rooftop_avg_metrics(all_g)
+            else:  # vin overall, or one region: pooled over its VINs
                 m = compute_group_metrics(all_g)
 
             # distinct video counts for this group/period (not deduped to VIN)
