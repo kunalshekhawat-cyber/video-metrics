@@ -19,10 +19,10 @@ Metric definitions (all from model 1, card 11942; one row per ACTIVE video):
   Segments              -> Ent / Mid / Resellers / SMB, matched case-insensitively
                            on customer_segment.
   Aggregation per tab   -> video_vin: pooled over all videos in the period.
-                           video_region / video_rt: per rooftop (team_id), then
-                           a video-weighted average across rooftops (within the
-                           region for video_region). For SLA / fulfillment
-                           that weighted average equals the pooled percentage.
+                           video_region: pooled over each region's videos.
+                           video_rt: per rooftop (team_id), then a
+                           video-weighted average across rooftops. For SLA /
+                           fulfillment that equals the pooled percentage.
   Period bucketing      -> by the active video's Created_ON, ISO week (Mon-Sun).
                            4 completed weekly + 4 monthly + 1 MTD = 9 buckets.
                            Empty period/segment cell -> 0.
@@ -384,9 +384,9 @@ def rooftop_weighted_percentiles(rows):
 
 def compute_rooftop_weighted_metrics(rows):
     """
-    Metrics for video_rt and video_region (per region): every metric is a
-    rooftop (team_id)-level value, averaged across rooftops weighted by each
-    rooftop's video count for that metric.
+    Metrics for video_rt: every metric is a rooftop (team_id)-level value,
+    averaged across rooftops weighted by each rooftop's video count for that
+    metric.
       - p99 / p95 TAT: computed per rooftop, then video-weighted average.
       - SLA / fulfillment: a video-weighted average of per-rooftop percentages
         is exactly the pooled percentage over all the rooftops' videos, so it
@@ -471,10 +471,10 @@ def build_tab_rows(raw_rows, periods, grain, last_updated):
             groups = {None: all_p}
 
         for gkey, all_g in groups.items():
-            if grain == "vin":
-                m = compute_group_metrics(all_g)
-            else:  # rt overall, or region: rooftop-level, video-weighted
+            if grain == "rt":  # rooftop-level, video-weighted
                 m = compute_rooftop_weighted_metrics(all_g)
+            else:  # vin overall, or region: pooled over the group's videos
+                m = compute_group_metrics(all_g)
 
             # distinct video counts for this group/period (not deduped to VIN)
             # total_videos = distinct video_ids whose crm_status is qc_done
