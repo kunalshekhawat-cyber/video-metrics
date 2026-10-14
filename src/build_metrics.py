@@ -412,9 +412,13 @@ def prepare_rows(raw_rows):
     Normalize raw model-1 rows (one per active video) into a compact form.
     Each row carries: created, seg, region, team_id, team_name,
     verified_status, vin, rejected_reason, video_id, crm_status, and
-      qc_tat   = qc_updated_on - Created_ON          (seconds, or None)
-      tech_tat = Processing_Done_Time - Created_ON   (seconds, or None)
-    Negative or missing TATs are None, so the row is skipped for that metric.
+      qc_tat   = qc_updated_on - effective_created   (seconds, or None)
+      tech_tat = Processing_Done_Time - effective_created (seconds, or None)
+    effective_created = Last_Reprocessed_ON when present, else Created_ON —
+    so a video reprocessed due to a price change has its TAT clock restart
+    at the reprocess time and lands in the period bucket of its reprocess
+    date. Negative or missing TATs are None, so the row is skipped for that
+    metric.
     """
     def getv(row, *names):
         """Return the first present, non-empty value among candidate key names."""
@@ -432,7 +436,12 @@ def prepare_rows(raw_rows):
     all_rows = []
     for r in raw_rows:
         # API may return display names ('Created On'); tolerate both forms.
-        created = parse_dt(getv(r, "Created On", "Created_ON", "created_on"))
+        created_raw = parse_dt(getv(r, "Created On", "Created_ON", "created_on"))
+        last_reprocessed = parse_dt(getv(
+            r, "Last_Reprocessed_ON", "Last Reprocessed ON",
+            "Last_Reprocessed_On", "last_reprocessed_on",
+        ))
+        created = last_reprocessed or created_raw
         qc_done = parse_dt(getv(r, "qc_updated_on", "Qc Updated On", "QC Updated On"))
         proc_done = parse_dt(getv(r, "Processing_Done_Time", "Processing Done Time",
                                   "processing_done_time"))
