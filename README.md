@@ -14,6 +14,7 @@ All metrics come from model 1 only (model 2 is not used in this version).
 | `sla_pct` | Over **one row per VIN** (the first video on that VIN): share where TAT ≤ **6h**. |
 | `p99_tat_hrs`, `p95_tat_hrs` | 99th / 95th percentile of TAT over the same one-row-per-VIN population. |
 | `fulfillment_pct` | Over **all** video rows in the period: `verified / (verified + rejected) × 100`. Other `verified_status` values ignored. |
+| `sla_checked`, `sla_breached`, `tat_measured`, `tat_over_sla` | Counts behind the SLA / TAT numbers for the dashboard tooltips: videos with a QC TAT, and of those, how many took over **6h**. On `video_rt` they count **rooftops** (with a QC TAT / with at least one video over 6h). Segment-prefixed copies too. |
 | `ent_* / mid_* / resellers_* / smb_*` | Same metrics sliced by `customer_segment` (`Ent`, `Mid`, `Resellers`, `SMB`, case-insensitive). |
 
 - **TAT** = `First_QC_Done_Time − Created_ON` (hours). `First_QC_Done_Time` is

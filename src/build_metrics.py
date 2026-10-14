@@ -70,15 +70,26 @@ METRIC_HEADERS = (
     + [f"{seg}_fulfillment_pct" for seg in SEG_PREFIXES]
 )
 
+# Counts behind the QC SLA / TAT numbers, shown in the dashboard tooltips
+# (same column names as the images tabs). On video_vin / video_region they count
+# videos; on video_rt they count rooftops.
+#   sla_checked  = in the SLA population (has a qc_done time)
+#   sla_breached = of those, QC TAT > 6h
+#   tat_measured = in the TAT (P95/P99) population (same rows as sla_checked)
+#   tat_over_sla = of those, QC TAT > 6h
+COUNT_METRICS = ["sla_checked", "sla_breached", "tat_measured", "tat_over_sla"]
+COUNT_HEADERS = (COUNT_METRICS
+                 + [f"{seg}_{m}" for seg in SEG_PREFIXES for m in COUNT_METRICS])
+
 VIN_HEADERS = (["period_type", "period", "total_videos", "delivered_videos"]
-               + METRIC_HEADERS + ["last_updated"])
+               + METRIC_HEADERS + COUNT_HEADERS + ["last_updated"])
 
 REGION_HEADERS = (["period_type", "period", "region", "total_videos", "delivered_videos"]
-                  + METRIC_HEADERS + ["last_updated"])
+                  + METRIC_HEADERS + COUNT_HEADERS + ["last_updated"])
 
 RT_HEADERS = (["sort_order", "sort_date", "period_type", "period",
                "total_videos", "delivered_videos"]
-              + METRIC_HEADERS + ["last_updated"])
+              + METRIC_HEADERS + COUNT_HEADERS + ["last_updated"])
 
 LOG_TAB = "run_log"
 LOG_HEADERS = [
@@ -407,6 +418,43 @@ def compute_macro_avg_metrics(rows):
     return out
 
 
+def _count_block(rows, prefix=""):
+    """Video counts behind QC sla / p99 / p95: rows with a QC TAT, and those over 6h."""
+    tats = [r["qc_tat"] for r in rows if r["qc_tat"] is not None]
+    over = sum(1 for t in tats if t > SLA_THRESHOLD_SECONDS)
+    return {f"{prefix}sla_checked": len(tats), f"{prefix}sla_breached": over,
+            f"{prefix}tat_measured": len(tats), f"{prefix}tat_over_sla": over}
+
+
+def compute_counts(rows):
+    """Tooltip counts in videos (video_vin / video_region), overall and per segment."""
+    out = _count_block(rows)
+    for seg in SEGMENTS.values():
+        out.update(_count_block([r for r in rows if r["seg"] == seg], f"{seg}_"))
+    return out
+
+
+def compute_rooftop_counts(rows):
+    """
+    Tooltip counts in rooftops (video_rt), overall and per segment:
+    rooftops with at least one QC TAT, and rooftops with at least one video over 6h.
+    """
+    by_team = defaultdict(list)
+    for r in rows:
+        by_team[r["team_id"]].append(r)
+    out = {}
+    for prefix, seg in [("", None)] + [(f"{s}_", s) for s in SEGMENTS.values()]:
+        checked = breached = 0
+        for team_rows in by_team.values():
+            c = _count_block([r for r in team_rows if seg is None or r["seg"] == seg])
+            if c["sla_checked"]:
+                checked += 1
+                breached += 1 if c["sla_breached"] else 0
+        out.update({f"{prefix}sla_checked": checked, f"{prefix}sla_breached": breached,
+                    f"{prefix}tat_measured": checked, f"{prefix}tat_over_sla": breached})
+    return out
+
+
 def prepare_rows(raw_rows):
     """
     Normalize raw model-1 rows (one per active video) into a compact form.
@@ -497,6 +545,7 @@ def build_tab_rows(raw_rows, periods, grain, last_updated):
                 if grain == "region":
                     # p99/p95: per rooftop within the region, video-weighted
                     m.update(rooftop_weighted_percentiles(all_g))
+            m.update(compute_rooftop_counts(all_g) if grain == "rt" else compute_counts(all_g))
 
             # distinct video counts for this group/period (not deduped to VIN)
             # total_videos = distinct video_ids whose crm_status is qc_done
