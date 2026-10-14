@@ -11,17 +11,16 @@ All metrics come from model 1 only (model 2 is not used in this version).
 
 | Metric | Definition |
 |---|---|
-| `sla_pct` | Over **one row per VIN** (the first video on that VIN): share where TAT ≤ **6h**. |
-| `p99_tat_hrs`, `p95_tat_hrs` | 99th / 95th percentile of TAT over the same one-row-per-VIN population. |
-| `fulfillment_pct` | Over **all** video rows in the period: `verified / (verified + rejected) × 100`. Other `verified_status` values ignored. |
-| `sla_checked`, `sla_breached`, `tat_measured`, `tat_over_sla` | Counts behind the SLA / TAT numbers for the dashboard tooltips: videos with a QC TAT, and of those, how many took over **6h**. On `video_rt` they count **rooftops** (with a QC TAT / with at least one video over 6h). Segment-prefixed copies too. |
+| `sla_pct` | Over the **video population** = verified + rejected + QC-pending videos: share whose QC TAT ≤ **6h**. A video still pending QC 6h after its clock start is a breach; one pending for less than 6h isn't judged yet (current period only). |
+| `p99_tat_hrs`, `p95_tat_hrs` | 99th / 95th percentile of QC TAT over **delivered (verified)** videos. |
+| `fulfillment_pct` | `verified / (verified + rejected + QC-pending) × 100`. `total_videos` / `delivered_videos` are that denominator / numerator. |
+| `sla_checked`, `sla_breached`, `tat_measured`, `tat_over_sla` | Counts behind SLA / TAT for the dashboard tooltips. `sla_checked` = population judged for SLA (equals `total_videos` for finished periods), `sla_breached` = of those, over 6h or still pending after 6h; `tat_measured` = delivered videos with a TAT (equals `delivered_videos`), `tat_over_sla` = of those, over 6h. On `video_rt` they count **rooftops**. Segment-prefixed copies too. |
 | `ent_* / mid_* / resellers_* / smb_*` | Same metrics sliced by `customer_segment` (`Ent`, `Mid`, `Resellers`, `SMB`, case-insensitive). |
 
-- **TAT** = `First_QC_Done_Time − Created_ON` (hours). `First_QC_Done_Time` is
-  per-VIN, so metrics use only the *first* video per VIN — this is non-negative
-  by construction.
-- VINs with **no** `First_QC_Done_Time` are **skipped** from SLA/p99/p95 (still
-  pending QC) but still count toward fulfillment.
+- **TAT** = QC done time (`qc_updated_on`) − clock start (`Last_Reprocessed_ON`
+  when present, else `Created_ON`), in hours.
+- Videos still pending QC count toward fulfillment and, once 6h have passed,
+  as SLA breaches. They have no TAT, so they're not in p99/p95.
 - Empty period/segment cells are written as `0`.
 
 ## Period buckets (by `Created_ON`, ISO week Mon–Sun)
