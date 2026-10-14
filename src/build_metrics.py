@@ -13,7 +13,7 @@ Metric definitions (all from model 1, card 11942; one row per ACTIVE video):
                            QC sla and the tooltip counts all use it.
   QC  sla               -> share of that population with QC TAT <= 6h. A video
                            still QC-pending 6h after its clock start is a breach;
-                           one pending for less than 6h isn't judged yet.
+                           one pending for less than 6h counts as within SLA.
   QC  p99 / p95         -> TAT = qc_updated_on (qc_done time) - clock start, over
                            delivered (verified) videos only.
   tech sla / p99 / p95  -> TAT = Processing_Done_Time - Created_ON.
@@ -333,7 +333,7 @@ def _fulfillment(rows):
 def _qc_sla(rows):
     """
     QC SLA % over the shared population (see prepare_rows): videos whose QC took
-    <= 6h, out of all sla_eligible videos. A video still pending QC more than 6h
+    <= 6h (or still pending QC under 6h), out of all sla_eligible videos. A video still pending QC more than 6h
     after its clock start counts as a breach. None if nothing is eligible.
     """
     elig = [r for r in rows if r["sla_eligible"]]
@@ -444,7 +444,7 @@ def compute_macro_avg_metrics(rows):
 def _count_block(rows, prefix=""):
     """
     Video counts behind QC sla / p99 / p95:
-      sla_checked  = sla_eligible videos (= total_videos once the period is >6h old)
+      sla_checked  = sla_eligible videos (= total_videos)
       sla_breached = of those, QC over 6h or still pending after 6h
       tat_measured = delivered videos with a QC TAT (= delivered_videos)
       tat_over_sla = of those, QC TAT over 6h
@@ -544,7 +544,8 @@ def prepare_rows(raw_rows, now=None):
         })
         # One population for fulfilment, SLA and TAT (same rule as the image cards):
         #   in_pop       = verified + rejected + QC-pending  (the fulfillment_pct denominator)
-        #   sla_eligible = in_pop, minus QC-pending videos whose 6h hasn't run out yet
+        #   sla_eligible = in_pop (every period, MTD included); a QC-pending video counts
+        #                  as within SLA until its 6h run out
         #   sla_breach   = QC took over 6h, or still pending more than 6h after the clock start
         #   qc_tat_del   = QC TAT of delivered (verified) videos only -> the P95/P99 population
         row = all_rows[-1]
@@ -552,9 +553,9 @@ def prepare_rows(raw_rows, now=None):
         row["delivered"] = vs == "verified"
         row["in_pop"] = row["delivered"] or vs == "rejected" or row["qc_pending"]
         overdue = created is not None and created + timedelta(seconds=SLA_THRESHOLD_SECONDS) <= now
-        row["sla_eligible"] = row["in_pop"] and (not row["qc_pending"] or overdue)
+        row["sla_eligible"] = row["in_pop"]
         row["sla_breach"] = row["sla_eligible"] and (
-            row["qc_pending"] or (row["qc_tat"] is not None and row["qc_tat"] > SLA_THRESHOLD_SECONDS))
+            (row["qc_pending"] and overdue) or (row["qc_tat"] is not None and row["qc_tat"] > SLA_THRESHOLD_SECONDS))
         row["qc_tat_del"] = row["qc_tat"] if row["delivered"] else None
     return all_rows
 
