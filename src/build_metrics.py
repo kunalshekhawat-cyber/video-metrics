@@ -8,8 +8,14 @@ Tabs populated (clear + full repopulate each run):
   - video_rt      : per team_id x period bucket (+ sort_order, sort_date)
 
 Metric definitions (all from model 1, card 11942; one row per ACTIVE video):
-  QC  sla / p99 / p95   -> TAT = qc_updated_on (qc_done time) - Created_ON.
-                           Rows without a qc_done time are skipped.
+  Population            -> verified + rejected + QC-pending videos (QC-pending =
+                           no qc_done time yet). total_videos, fulfillment_pct,
+                           QC sla and the tooltip counts all use it.
+  QC  sla               -> share of that population with QC TAT <= 6h. A video
+                           still QC-pending 6h after its clock start is a breach;
+                           one pending for less than 6h isn't judged yet.
+  QC  p99 / p95         -> TAT = qc_updated_on (qc_done time) - clock start, over
+                           delivered (verified) videos only.
   tech sla / p99 / p95  -> TAT = Processing_Done_Time - Created_ON.
                            Rows without a processing done time are skipped.
   SLA met               -> TAT <= 6h (21600s), for both QC and tech.
@@ -324,10 +330,27 @@ def _fulfillment(rows):
     return round(delivered / denom * 100, 2)
 
 
+def _qc_sla(rows):
+    """
+    QC SLA % over the shared population (see prepare_rows): videos whose QC took
+    <= 6h, out of all sla_eligible videos. A video still pending QC more than 6h
+    after its clock start counts as a breach. None if nothing is eligible.
+    """
+    elig = [r for r in rows if r["sla_eligible"]]
+    if not elig:
+        return None
+    return round((len(elig) - sum(1 for r in elig if r["sla_breach"])) / len(elig) * 100, 2)
+
+
 def _tat_block(rows, prefix=""):
-    """QC + tech sla/p99/p95 for these rows, keyed with an optional prefix."""
+    """
+    QC + tech sla/p99/p95 for these rows, keyed with an optional prefix.
+    QC sla uses the shared population; QC p99/p95 use delivered (verified)
+    videos only, so the TAT population equals delivered_videos. Tech is unchanged.
+    """
     out = {}
-    qc = _sla_p99_p95([r["qc_tat"] for r in rows if r["qc_tat"] is not None])
+    _, qp99, qp95 = _sla_p99_p95([r["qc_tat_del"] for r in rows if r["qc_tat_del"] is not None])
+    qc = (_qc_sla(rows), qp99, qp95)
     tech = _sla_p99_p95([r["tech_tat"] for r in rows if r["tech_tat"] is not None])
     for name, val in zip(TAT_METRICS, qc + tech):
         out[prefix + name] = val
@@ -370,7 +393,7 @@ def rooftop_weighted_percentiles(rows):
         by_team[r["team_id"]].append(r)
 
     scopes = [("", None)] + [(f"{seg}_", seg) for seg in SEGMENTS.values()]
-    kinds = [("", "qc_tat"), ("tech_", "tech_tat")]
+    kinds = [("", "qc_tat_del"), ("tech_", "tech_tat")]   # QC: delivered videos only
 
     out = {}
     for prefix, seg in scopes:
@@ -419,11 +442,18 @@ def compute_macro_avg_metrics(rows):
 
 
 def _count_block(rows, prefix=""):
-    """Video counts behind QC sla / p99 / p95: rows with a QC TAT, and those over 6h."""
-    tats = [r["qc_tat"] for r in rows if r["qc_tat"] is not None]
-    over = sum(1 for t in tats if t > SLA_THRESHOLD_SECONDS)
-    return {f"{prefix}sla_checked": len(tats), f"{prefix}sla_breached": over,
-            f"{prefix}tat_measured": len(tats), f"{prefix}tat_over_sla": over}
+    """
+    Video counts behind QC sla / p99 / p95:
+      sla_checked  = sla_eligible videos (= total_videos once the period is >6h old)
+      sla_breached = of those, QC over 6h or still pending after 6h
+      tat_measured = delivered videos with a QC TAT (= delivered_videos)
+      tat_over_sla = of those, QC TAT over 6h
+    """
+    tats = [r["qc_tat_del"] for r in rows if r["qc_tat_del"] is not None]
+    return {f"{prefix}sla_checked": sum(1 for r in rows if r["sla_eligible"]),
+            f"{prefix}sla_breached": sum(1 for r in rows if r["sla_breach"]),
+            f"{prefix}tat_measured": len(tats),
+            f"{prefix}tat_over_sla": sum(1 for x in tats if x > SLA_THRESHOLD_SECONDS)}
 
 
 def compute_counts(rows):
@@ -437,25 +467,24 @@ def compute_counts(rows):
 def compute_rooftop_counts(rows):
     """
     Tooltip counts in rooftops (video_rt), overall and per segment:
-    rooftops with at least one QC TAT, and rooftops with at least one video over 6h.
+    sla_checked / sla_breached  = rooftops with an SLA-eligible video / with a breach;
+    tat_measured / tat_over_sla = rooftops with a delivered video's TAT / with one over 6h.
     """
     by_team = defaultdict(list)
     for r in rows:
         by_team[r["team_id"]].append(r)
     out = {}
     for prefix, seg in [("", None)] + [(f"{s}_", s) for s in SEGMENTS.values()]:
-        checked = breached = 0
+        n = {"sla_checked": 0, "sla_breached": 0, "tat_measured": 0, "tat_over_sla": 0}
         for team_rows in by_team.values():
             c = _count_block([r for r in team_rows if seg is None or r["seg"] == seg])
-            if c["sla_checked"]:
-                checked += 1
-                breached += 1 if c["sla_breached"] else 0
-        out.update({f"{prefix}sla_checked": checked, f"{prefix}sla_breached": breached,
-                    f"{prefix}tat_measured": checked, f"{prefix}tat_over_sla": breached})
+            for k in n:
+                n[k] += 1 if c[k] else 0
+        out.update({prefix + k: v for k, v in n.items()})
     return out
 
 
-def prepare_rows(raw_rows):
+def prepare_rows(raw_rows, now=None):
     """
     Normalize raw model-1 rows (one per active video) into a compact form.
     Each row carries: created, seg, region, team_id, team_name,
@@ -480,6 +509,9 @@ def prepare_rows(raw_rows):
             return None
         secs = (end - start).total_seconds()
         return secs if secs >= 0 else None
+
+    # "now" on the same naive IST clock as the period buckets (build_periods uses the IST date)
+    now = now or datetime.now(IST).replace(tzinfo=None)
 
     all_rows = []
     for r in raw_rows:
@@ -510,6 +542,20 @@ def prepare_rows(raw_rows):
             "qc_pending": qc_done is None,
             "tech_tat": tat(proc_done, created),
         })
+        # One population for fulfilment, SLA and TAT (same rule as the image cards):
+        #   in_pop       = verified + rejected + QC-pending  (the fulfillment_pct denominator)
+        #   sla_eligible = in_pop, minus QC-pending videos whose 6h hasn't run out yet
+        #   sla_breach   = QC took over 6h, or still pending more than 6h after the clock start
+        #   qc_tat_del   = QC TAT of delivered (verified) videos only -> the P95/P99 population
+        row = all_rows[-1]
+        vs = str(row["verified_status"] or "").strip().lower()
+        row["delivered"] = vs == "verified"
+        row["in_pop"] = row["delivered"] or vs == "rejected" or row["qc_pending"]
+        overdue = created is not None and created + timedelta(seconds=SLA_THRESHOLD_SECONDS) <= now
+        row["sla_eligible"] = row["in_pop"] and (not row["qc_pending"] or overdue)
+        row["sla_breach"] = row["sla_eligible"] and (
+            row["qc_pending"] or (row["qc_tat"] is not None and row["qc_tat"] > SLA_THRESHOLD_SECONDS))
+        row["qc_tat_del"] = row["qc_tat"] if row["delivered"] else None
     return all_rows
 
 
@@ -547,14 +593,11 @@ def build_tab_rows(raw_rows, periods, grain, last_updated):
                     m.update(rooftop_weighted_percentiles(all_g))
             m.update(compute_rooftop_counts(all_g) if grain == "rt" else compute_counts(all_g))
 
-            # distinct video counts for this group/period (not deduped to VIN)
-            # total_videos = distinct video_ids whose crm_status is qc_done
-            total_vids = len({r["video_id"] for r in all_g
-                              if r.get("video_id") not in (None, "")
-                              and str(r.get("crm_status") or "").strip().lower() == "qc_done"})
-            delivered_vids = len({r["video_id"] for r in all_g
-                                  if r.get("video_id") not in (None, "")
-                                  and str(r.get("verified_status") or "").strip().lower() == "verified"})
+            # total_videos / delivered_videos = the fulfillment_pct denominator / numerator
+            # (verified + rejected + QC-pending / verified), so the tooltip's Total and
+            # Delivered explain the fulfilment % and line up with the SLA / TAT counts.
+            total_vids = sum(1 for r in all_g if r["in_pop"])
+            delivered_vids = sum(1 for r in all_g if r["delivered"])
             vid_counts = {"total_videos": total_vids,
                           "delivered_videos": delivered_vids}
 
