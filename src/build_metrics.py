@@ -598,12 +598,13 @@ def prepare_rows(raw_rows, now=None):
     return all_rows
 
 
-def build_tab_rows(raw_rows, periods, grain, last_updated):
+def build_tab_rows(raw_rows, periods, grain, last_updated, prepared=None):
     """
     grain in {"vin","region","rt"}.
     Returns list of output rows (list of cell values) matching that tab's headers.
+    prepared: already-prepared rows (prepare_rows output) to use instead of raw_rows.
     """
-    all_rows_all = prepare_rows(raw_rows)
+    all_rows_all = prepared if prepared is not None else prepare_rows(raw_rows)
 
     def in_period(dt, p):
         return dt is not None and p["start"] <= dt < p["end"]
@@ -674,6 +675,34 @@ def build_tab_rows(raw_rows, periods, grain, last_updated):
                 out_rows.append([row.get(h, 0) for h in RT_HEADERS])
 
     return out_rows
+
+
+def _with_region_set(headers):
+    i = headers.index("period") + 1
+    return headers[:i] + ["region_set"] + headers[i:]
+
+
+def build_byregion_rows(raw_rows, periods, grain, last_updated):
+    """
+    video_vin / video_rt pooled over every combination of regions except "all of them"
+    (that is the plain tab): 5 regions -> 30 sets per period. region_set lists the sorted
+    region names, e.g. 'AMER,EMEA'. The dashboard builds the same key from its region chips,
+    so the VIN and Rooftop cards follow the region filter exactly (P95/P99 included).
+    Returns (headers, rows).
+    """
+    base_headers = VIN_HEADERS if grain == "vin" else RT_HEADERS
+    headers = _with_region_set(base_headers)
+    pos = headers.index("region_set")
+    prepared = prepare_rows(raw_rows)
+    regions = sorted({r["region"] for r in prepared})
+    out = []
+    for mask in range(1, (1 << len(regions)) - 1):
+        subset = [reg for i, reg in enumerate(regions) if mask & (1 << i)]
+        key = ",".join(subset)
+        rows = [r for r in prepared if r["region"] in subset]
+        for row in build_tab_rows(None, periods, grain, last_updated, prepared=rows):
+            out.append(row[:pos] + [key] + row[pos:])
+    return headers, out
 
 
 def _canon_reason(raw):
@@ -855,6 +884,8 @@ def main():
         region_rows = build_tab_rows(raw_rows, periods, "region", last_updated)
         rt_rows = build_tab_rows(raw_rows, periods, "rt", last_updated)
         ff_rows = build_ff_rows(raw_rows, periods, last_updated)
+        vin_br_headers, vin_br_rows = build_byregion_rows(raw_rows, periods, "vin", last_updated)
+        rt_br_headers, rt_br_rows = build_byregion_rows(raw_rows, periods, "rt", last_updated)
 
         log["video_vin_rows"] = len(vin_rows)
         log["video_region_rows"] = len(region_rows)
@@ -866,6 +897,8 @@ def main():
             "video_region": (REGION_HEADERS, region_rows),
             "video_rt": (RT_HEADERS, rt_rows),
             "video_ff": (FF_HEADERS, ff_rows),
+            "video_vin_byregion": (vin_br_headers, vin_br_rows),
+            "video_rt_byregion": (rt_br_headers, rt_br_rows),
         }
 
         if args.dry_run:
