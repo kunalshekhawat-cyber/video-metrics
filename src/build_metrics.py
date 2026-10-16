@@ -209,23 +209,29 @@ def fetch_card_rows(base_url, session_id, card_id, max_attempts=4):
 
 def fetch_live_rooftops(base_url, session_id):
     """
-    Return the set of Live rooftop (team) ids. Uses Metabase's export endpoint, which
-    has no 2,000-row cap. Fails the run rather than silently counting every rooftop.
+    Return the set of Live rooftop (team) ids. Runs the SQL through Metabase's
+    normal /api/dataset endpoint (same pipeline the UI uses) rather than
+    /api/dataset/json — the latter is the export/download path and the Metabase
+    ClickHouse driver fails on it with "Select statement did not produce a
+    ResultSet for native query" when the query uses FINAL.
     """
-    query = {"database": CLICKHOUSE_DB_ID, "type": "native", "native": {"query": LIVE_ROOFTOPS_SQL}}
+    query = {"database": CLICKHOUSE_DB_ID, "type": "native",
+             "native": {"query": LIVE_ROOFTOPS_SQL.strip()}}
     resp = requests.post(
-        f"{base_url}/api/dataset/json",
-        headers={"X-Metabase-Session": session_id},
-        data={"query": json.dumps(query)},
+        f"{base_url}/api/dataset",
+        headers={"X-Metabase-Session": session_id, "Content-Type": "application/json"},
+        json=query,
         timeout=300,
     )
     try:
-        rows = resp.json()
+        body = resp.json()
     except ValueError:
-        rows = None
+        body = None
+    data = (body or {}).get("data") if isinstance(body, dict) else None
+    rows = (data or {}).get("rows") if isinstance(data, dict) else None
     if resp.status_code != 200 or not isinstance(rows, list) or not rows:
         raise RuntimeError(f"Live rooftop lookup failed ({resp.status_code}): {resp.text[:2000]}")
-    return {str(r["team_id"]) for r in rows if r.get("team_id")}
+    return {str(r[0]) for r in rows if r and r[0] is not None}
 
 
 # ----------------------------------------------------------------------------
