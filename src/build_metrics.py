@@ -229,7 +229,7 @@ def fetch_live_rooftops(base_url, session_id):
         body = None
     data = (body or {}).get("data") if isinstance(body, dict) else None
     rows = (data or {}).get("rows") if isinstance(data, dict) else None
-    if resp.status_code != 200 or not isinstance(rows, list) or not rows:
+    if resp.status_code not in (200, 202) or not isinstance(rows, list) or not rows:
         raise RuntimeError(f"Live rooftop lookup failed ({resp.status_code}): {resp.text[:2000]}")
     return {str(r[0]) for r in rows if r and r[0] is not None}
 
