@@ -224,7 +224,7 @@ def fetch_live_rooftops(base_url, session_id):
     except ValueError:
         rows = None
     if resp.status_code != 200 or not isinstance(rows, list) or not rows:
-        raise RuntimeError(f"Live rooftop lookup failed ({resp.status_code}): {resp.text[:200]}")
+        raise RuntimeError(f"Live rooftop lookup failed ({resp.status_code}): {resp.text[:2000]}")
     return {str(r["team_id"]) for r in rows if r.get("team_id")}
 
 
