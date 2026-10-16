@@ -40,6 +40,9 @@ Each tab holds **9** buckets per grain: 4 completed weekly + 4 completed monthly
 
 Each metric tab is **cleared and fully repopulated** every run.
 
+### `video_vin_byregion` / `video_rt_byregion`
+`video_vin` / `video_rt` pooled over every combination of regions except all of them: 5 regions, so 30 sets per period. They have the same columns plus `region_set`, the sorted region names, e.g. `AMER,EMEA`. The dashboard uses them so the region chips filter the VIN and Rooftop cards exactly.
+
 ### `run_log` tab
 Every run appends one row (created automatically if missing, never cleared):
 `run_time` (IST), `status` (success / failure / dry-run), `rows_fetched`,
