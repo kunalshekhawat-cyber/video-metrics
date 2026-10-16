@@ -7,6 +7,8 @@ Runs daily at **06:00 IST** via GitHub Actions (and on-demand via *Run workflow*
 
 ## What it computes
 
+**Population:** videos from **Live rooftops only**: rooftop Live, active and non-test, inside a Live, active, non-test enterprise. This is the same rule as the Images cards. Card 11942 filters enterprises but not rooftops, so the job looks up the Live rooftops (`LIVE_ROOFTOPS_SQL`, through Metabase) and drops other rows. If that lookup fails, the run fails.
+
 All metrics come from model 1 only (model 2 is not used in this version).
 
 | Metric | Definition |

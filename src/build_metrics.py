@@ -7,7 +7,8 @@ Tabs populated (clear + full repopulate each run):
   - video_region  : per region  x period bucket
   - video_rt      : per team_id x period bucket (+ sort_order, sort_date)
 
-Metric definitions (all from model 1, card 11942; one row per ACTIVE video):
+Metric definitions (all from model 1, card 11942; one row per ACTIVE video, Live rooftops
+only - rows from rooftops that aren't Live are dropped, see LIVE_ROOFTOPS_SQL):
   Population            -> verified + rejected + QC-pending videos (QC-pending =
                            no qc_done time yet). total_videos, fulfillment_pct,
                            QC sla and the tooltip counts all use it.
@@ -50,6 +51,22 @@ from zoneinfo import ZoneInfo
 
 SPREADSHEET_ID = "16vFElbOV8Awd63R6-WlsNdAScWNE18xGUPFkzE0GN7c"
 MODEL1_CARD_ID = 11942
+
+# Metabase database id of the ClickHouse warehouse, used for the Live-rooftop lookup below.
+CLICKHOUSE_DB_ID = int(os.environ.get("METABASE_CLICKHOUSE_DB_ID", "350"))
+
+# Population (same rule as the Images cards): only videos from Live, active, non-test
+# rooftops inside Live, active, non-test enterprises. Card 11942 filters enterprises but
+# not rooftops, so its rows are filtered here against this list.
+LIVE_ROOFTOPS_SQL = """
+SELECT t.team_id AS team_id
+FROM eventila.enterprise_team_details AS t FINAL
+INNER JOIN (
+    SELECT enterprise_id FROM eventila.enterprise_details FINAL
+    WHERE _peerdb_is_deleted = 0 AND stage = 'Live' AND is_active AND ifNull(is_test_account, 0) = 0
+) AS e ON e.enterprise_id = t.enterprise_id
+WHERE t._peerdb_is_deleted = 0 AND t.stage = 'Live' AND t.is_active AND ifNull(t.is_test_account, 0) = 0
+"""
 
 SLA_THRESHOLD_SECONDS = 6 * 3600  # fixed 6h SLA, QC and tech TAT
 
@@ -188,6 +205,27 @@ def fetch_card_rows(base_url, session_id, card_id, max_attempts=4):
     raise RuntimeError(
         f"Card {card_id} query failed after {max_attempts} attempts ({last_err})"
     )
+
+
+def fetch_live_rooftops(base_url, session_id):
+    """
+    Return the set of Live rooftop (team) ids. Uses Metabase's export endpoint, which
+    has no 2,000-row cap. Fails the run rather than silently counting every rooftop.
+    """
+    query = {"database": CLICKHOUSE_DB_ID, "type": "native", "native": {"query": LIVE_ROOFTOPS_SQL}}
+    resp = requests.post(
+        f"{base_url}/api/dataset/json",
+        headers={"X-Metabase-Session": session_id},
+        data={"query": json.dumps(query)},
+        timeout=300,
+    )
+    try:
+        rows = resp.json()
+    except ValueError:
+        rows = None
+    if resp.status_code != 200 or not isinstance(rows, list) or not rows:
+        raise RuntimeError(f"Live rooftop lookup failed ({resp.status_code}): {resp.text[:200]}")
+    return {str(r["team_id"]) for r in rows if r.get("team_id")}
 
 
 # ----------------------------------------------------------------------------
@@ -794,8 +832,15 @@ def main():
 
         print(f"fetching model 1 (card {MODEL1_CARD_ID}) ...")
         raw_rows = fetch_card_rows(base_url, session_id, MODEL1_CARD_ID)
-        log["rows_fetched"] = len(raw_rows)
         print(f"  {len(raw_rows)} rows")
+
+        # Live rooftops only (see LIVE_ROOFTOPS_SQL)
+        live_rooftops = fetch_live_rooftops(base_url, session_id)
+        before = len(raw_rows)
+        raw_rows = [r for r in raw_rows
+                    if str(r.get("Team_ID") or r.get("team_id") or "") in live_rooftops]
+        print(f"  {len(live_rooftops)} Live rooftops; kept {len(raw_rows)} of {before} rows")
+        log["rows_fetched"] = len(raw_rows)
 
         # --- DIAGNOSTIC: show the actual column names the API returned ---
         if raw_rows:
