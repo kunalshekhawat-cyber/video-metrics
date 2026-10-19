@@ -30,7 +30,8 @@ only - rows from rooftops that aren't Live are dropped, see LIVE_ROOFTOPS_SQL):
                            a video-weighted average across rooftops (within the
                            region for video_region).
   Period bucketing      -> by the active video's Created_ON, ISO week (Mon-Sun).
-                           4 completed weekly + 4 monthly + 1 MTD = 9 buckets.
+                           7 completed daily + 4 weekly + 4 monthly + 1 MTD
+                           = 16 buckets. D-1 = yesterday, D-7 = 7 days ago.
                            Empty period/segment cell -> 0.
 """
 
@@ -288,6 +289,19 @@ def build_periods(today_ist):
     """
     periods = []
     today = today_ist
+
+    # ---- 7 completed daily buckets (exclude today) ----
+    # D-1 = yesterday, D-2 = day before, ..., D-7 = 7 days ago.
+    for i in range(1, 8):
+        d = today - timedelta(days=i)
+        periods.append({
+            "period_type": "Day",
+            "period_label": f"D-{i}",
+            "sort_order": 0,
+            "sort_date": d.isoformat(),
+            "start": datetime.combine(d, datetime.min.time()),
+            "end": datetime.combine(d + timedelta(days=1), datetime.min.time()),
+        })
 
     # ---- 4 completed weekly buckets (exclude current partial week) ----
     # W-1 = most recent completed week, W-2 = the week before, etc.
