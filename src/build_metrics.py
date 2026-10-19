@@ -124,7 +124,6 @@ LOG_HEADERS = [
 
 # --- video_ff (failure / rejection reasons) ---
 FF_HEADERS = ["period_type", "period", "reason", "count", "pct", "last_updated"]
-FF_TOP_N = 3
 FF_NO_REASON = "(no reason recorded)"
 
 # These three raw reasons are merged into one bucket (matched case-insensitively,
@@ -744,9 +743,10 @@ def _canon_reason(raw):
 def build_ff_rows(raw_rows, periods, last_updated):
     """
     video_ff: rejection-reason breakdown per period.
-    One row per (period, reason) for the TOP FF_TOP_N reasons in that period.
-    count = rejected videos for that reason; pct = count / total created videos
-    in the period * 100. Reasons are merged (image-missing group) before ranking.
+    One row per (period, reason) for every reason seen in that period, ordered
+    by count desc. count = rejected videos for that reason;
+    pct = count / total created videos in the period * 100. Reasons are merged
+    (image-missing group) before counting.
     """
     all_rows_all = prepare_rows(raw_rows)
 
@@ -769,7 +769,7 @@ def build_ff_rows(raw_rows, periods, last_updated):
         # display each bucket with its most common spelling
         labelled = {max(variants[k].items(), key=lambda kv: (kv[1], kv[0]))[0]: n
                     for k, n in counts.items()}
-        ranked = sorted(labelled.items(), key=lambda kv: (-kv[1], kv[0]))[:FF_TOP_N]
+        ranked = sorted(labelled.items(), key=lambda kv: (-kv[1], kv[0]))
 
         for reason, cnt in ranked:
             pct = round(cnt / total_created * 100, 2) if total_created else 0
